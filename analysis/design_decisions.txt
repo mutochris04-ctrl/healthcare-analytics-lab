@@ -69,6 +69,10 @@ encounter row:
 
 - diagnosis_count: number of diagnoses of the encounter
 - procedure_count: number of procedures of the encounter
+- bill_count: number of bills of the encounter. 0 means "not billed
+  yet", which is different from a bill of 0 (a denied claim). Revenue
+  questions use only encounters with bill_count > 0, exactly like the
+  original query, which starts from the billing table.
 - total_claim_amount: money asked (sum of the bills)
 - total_allowed_amount: money accepted (sum of the bills)
 - length_of_stay_hours: discharge time - admission time

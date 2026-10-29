@@ -144,6 +144,7 @@ CREATE TABLE fact_encounters (
     -- Pre-aggregated metrics
     diagnosis_count      INT NOT NULL DEFAULT 0,             -- how many diagnoses
     procedure_count      INT NOT NULL DEFAULT 0,             -- how many procedures
+    bill_count           INT NOT NULL DEFAULT 0,             -- how many bills (0 = not billed yet)
     total_claim_amount   DECIMAL(12,2) NOT NULL DEFAULT 0,   -- money asked
     total_allowed_amount DECIMAL(12,2) NOT NULL DEFAULT 0,   -- money accepted
     length_of_stay_hours INT,                                -- discharge - admission

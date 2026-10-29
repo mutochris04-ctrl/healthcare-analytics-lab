@@ -115,15 +115,17 @@ FROM healthcare_oltp.patients;
 -- ============================================
 -- 5. fact_encounters: one row per encounter
 --   - look up the new keys by JOINing each dimension on its old ID
---   - count diagnoses and procedures, add up the bills (pre-aggregation)
+--   - count diagnoses, procedures and bills, add up the bills (pre-aggregation)
 --   - set the readmission flag once, here
--- IFNULL(..., 0): an encounter without a bill gets 0, not NULL
+-- IFNULL(..., 0): an encounter without a bill gets 0, not NULL.
+-- bill_count tells "no bill yet" (0 bills) apart from "a bill of 0"
+-- (for example a denied claim).
 -- ============================================
 INSERT INTO fact_encounters (
     encounter_id, encounter_date_key, discharge_date_key,
     patient_key, provider_key, specialty_key, department_key, encounter_type_key,
     encounter_datetime, discharge_datetime,
-    diagnosis_count, procedure_count, total_claim_amount, total_allowed_amount,
+    diagnosis_count, procedure_count, bill_count, total_claim_amount, total_allowed_amount,
     length_of_stay_hours, is_readmitted_30_days
 )
 SELECT
@@ -151,6 +153,10 @@ SELECT
     -- how many procedures for this encounter
     (SELECT COUNT(*) FROM healthcare_oltp.encounter_procedures
      WHERE encounter_procedures.encounter_id = encounters.encounter_id),
+
+    -- how many bills for this encounter (0 = no bill yet)
+    (SELECT COUNT(*) FROM healthcare_oltp.billing
+     WHERE billing.encounter_id = encounters.encounter_id),
 
     -- money asked and money accepted for this encounter
     IFNULL((SELECT SUM(claim_amount) FROM healthcare_oltp.billing
@@ -207,8 +213,9 @@ JOIN fact_encounters ON fact_encounters.encounter_id = encounter_procedures.enco
 JOIN dim_procedure   ON dim_procedure.procedure_id = encounter_procedures.procedure_id;
 
 -- ============================================
--- 7. Checks: the star schema must have the SAME number of
--- encounters, diagnosis lines and procedure lines as the original
+-- 7. Checks: the star schema must match the original database.
+-- Each row compares the SAME thing, counted in both databases.
+-- The two columns must be equal on every row.
 -- ============================================
 SELECT 'encounters' AS what,
        (SELECT COUNT(*) FROM healthcare_oltp.encounters) AS in_original,
@@ -222,6 +229,44 @@ SELECT 'procedure lines',
        (SELECT COUNT(*) FROM healthcare_oltp.encounter_procedures),
        (SELECT COUNT(*) FROM bridge_encounter_procedures)
 UNION ALL
+-- encounters that have at least one bill
+SELECT 'encounters with a bill',
+       (SELECT COUNT(DISTINCT encounter_id) FROM healthcare_oltp.billing),
+       (SELECT COUNT(*) FROM fact_encounters WHERE bill_count > 0)
+UNION ALL
+-- money asked: all bills vs the totals stored on the fact rows
+SELECT 'total claim amount',
+       (SELECT SUM(claim_amount) FROM healthcare_oltp.billing),
+       (SELECT SUM(total_claim_amount) FROM fact_encounters)
+UNION ALL
+-- money accepted: all bills vs the totals stored on the fact rows
 SELECT 'total allowed amount',
        (SELECT SUM(allowed_amount) FROM healthcare_oltp.billing),
-       (SELECT SUM(total_allowed_amount) FROM fact_encounters);
+       (SELECT SUM(total_allowed_amount) FROM fact_encounters)
+UNION ALL
+-- inpatient stays: in the original vs in the fact table
+SELECT 'inpatient stays',
+       (SELECT COUNT(*) FROM healthcare_oltp.encounters
+        WHERE encounter_type = 'Inpatient'),
+       (SELECT COUNT(*) FROM fact_encounters
+        JOIN dim_encounter_type
+          ON fact_encounters.encounter_type_key = dim_encounter_type.encounter_type_key
+        WHERE dim_encounter_type.encounter_type_name = 'Inpatient')
+UNION ALL
+-- readmitted stays: counted in the original with the SELF-JOIN
+-- (the same rule as Question 3 in 02_oltp_queries.sql)
+-- vs the flags the ETL stored on INPATIENT fact rows
+SELECT 'readmitted stays (30 days)',
+       (SELECT COUNT(DISTINCT first_stay.encounter_id)
+        FROM healthcare_oltp.encounters AS first_stay
+        JOIN healthcare_oltp.encounters AS next_stay
+          ON  next_stay.patient_id = first_stay.patient_id
+          AND next_stay.encounter_type = 'Inpatient'
+          AND next_stay.encounter_date > first_stay.discharge_date
+          AND next_stay.encounter_date <= DATE_ADD(first_stay.discharge_date, INTERVAL 30 DAY)
+        WHERE first_stay.encounter_type = 'Inpatient'),
+       (SELECT SUM(fact_encounters.is_readmitted_30_days)
+        FROM fact_encounters
+        JOIN dim_encounter_type
+          ON fact_encounters.encounter_type_key = dim_encounter_type.encounter_type_key
+        WHERE dim_encounter_type.encounter_type_name = 'Inpatient');

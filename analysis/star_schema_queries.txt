@@ -4,23 +4,27 @@ STAR SCHEMA QUERIES: the same 4 questions on the new design
 Database: healthcare_star (filled from healthcare_oltp by 03_etl_load.sql)
 Same data as in query_analysis.txt (30,004 encounters).
 
-Every query returns EXACTLY the same result as the original query
-(I compared them row by row).
+Every query returns EXACTLY the same result as the original query.
+I compared the results of 02_oltp_queries.sql and 04_star_queries.sql
+row by row for all 4 questions (and the total per specialty): all equal.
 
-How I measured: 5 runs each, middle (median) value, MySQL profiling.
-DRAFT NOTE: re-measure in MySQL Workbench before the final version.
+How I measured: 3 test runs; in each run every query was run 5 times
+and I kept the middle (median) value, from MySQL profiling. Times vary
+between runs, so I give the range of the 3 runs.
+DRAFT NOTE: re-measure in MySQL Workbench (3 times each) for the final
+version.
 
 The full queries are also in 04_star_queries.sql (ready to run).
 
 
-SUMMARY TABLE
+SUMMARY TABLE (range of 3 test runs)
 
-Question                     Original   Star schema   Improvement
-1. Encounters by specialty     75 ms       110 ms       0.7x (not faster)
-2. Diagnosis-procedure pairs  445 ms       124 ms       3.6x faster
-3. 30-day readmission rate     99 ms        14 ms       6.9x faster
-4. Revenue by specialty        97 ms        71 ms       1.4x faster
-   (total per specialty)       90 ms        26 ms       3.4x faster
+Question                     Original     Star schema   Improvement
+1. Encounters by specialty    47-63 ms     49-81 ms     0.7x-1.3x (about the same)
+2. Diagnosis-procedure pairs 297-349 ms    88-104 ms    2.9x-3.8x faster
+3. 30-day readmission rate    66-109 ms   7.5-8.6 ms    7.6x-14.6x faster
+4. Revenue by specialty       72-73 ms     42-73 ms     1.0x-1.7x (about the same or a little faster)
+   (total per specialty)      51-84 ms     19-34 ms     2.5x-3.1x faster
 
 
 QUESTION 1: Monthly Encounters by Specialty
@@ -39,8 +43,9 @@ JOIN dim_encounter_type ON fact_encounters.encounter_type_key = dim_encounter_ty
 GROUP BY encounter_month, dim_specialty.specialty_name, encounter_type
 ORDER BY encounter_month, dim_specialty.specialty_name, encounter_type;
 
-Execution time: ~110 ms vs 75 ms original
-Improvement: 0.7x, so NOT faster with this amount of data
+Execution time: 49-81 ms vs 47-63 ms original
+Improvement: about the same speed with this amount of data
+(0.7x to 1.3x depending on the run)
 
 Explanation:
 The query is simpler: the specialty is on the fact row (no
@@ -48,11 +53,10 @@ providers -> specialties chain) and the month is ready in dim_date
 (no DATE_FORMAT). But it still joins 3 dimensions for all 30,004
 rows, while the original joined only 2 very small tables
 (9 providers, 4 specialties). With so few rows, both designs do
-about the same work, and the extra dimension lookups cost a little
-more. The star schema's advantage here is simpler SQL and an easy
-way to add more dimensions (age group, department...) with one JOIN
-each. I expect the speed gain to appear with much more data, but I
-did not prove it in this draft.
+about the same work. The star schema's advantage here is simpler SQL
+and an easy way to add more dimensions (age group, department...) with
+one JOIN each. A speed gain may appear with much more data, but I did
+not measure that, so I do not claim it.
 
 
 QUESTION 2: Top Diagnosis-Procedure Pairs
@@ -65,11 +69,12 @@ SELECT
     dim_procedure.cpt_description,
     pairs.encounter_count
 FROM (
-    -- Step A: count every (diagnosis, procedure) pair of keys
+    -- Step A: for every (diagnosis, procedure) pair of keys,
+    -- count the DIFFERENT encounters that have it (same as the original)
     SELECT
         bridge_encounter_diagnoses.diagnosis_key,
         bridge_encounter_procedures.procedure_key,
-        COUNT(*) AS encounter_count
+        COUNT(DISTINCT bridge_encounter_diagnoses.encounter_key) AS encounter_count
     FROM bridge_encounter_diagnoses
     JOIN bridge_encounter_procedures
          ON bridge_encounter_diagnoses.encounter_key = bridge_encounter_procedures.encounter_key
@@ -81,20 +86,26 @@ JOIN dim_procedure ON pairs.procedure_key = dim_procedure.procedure_key
 ORDER BY pairs.encounter_count DESC
 LIMIT 10;
 
-Execution time: ~124 ms vs 445 ms original
-Improvement: 3.6x faster
+Execution time: 88-104 ms vs 297-349 ms original
+Improvement: about 3-4x faster
 
 Explanation:
 The pairs are still many-to-many, so the bridge tables still create
 89,951 pair rows. What changed:
-- Step A counts the pairs using only small whole-number keys, from
-  bridge tables whose primary key starts with encounter_key.
+- Step A counts the DIFFERENT encounters for each pair using only small
+  whole-number keys, from bridge tables whose primary key starts with
+  encounter_key. COUNT(DISTINCT encounter_key) is the same metric as
+  the original COUNT(DISTINCT encounter_id).
+  (I checked: for all 38 pairs, COUNT(*) and COUNT(DISTINCT ...) give
+  the same number, because a bridge table cannot hold the same
+  diagnosis or procedure twice for one encounter. I still use DISTINCT
+  so the query says exactly what it counts.)
 - Step B looks up the codes and names only for the 38 different
   pairs, instead of for 89,951 rows.
 Honest note: I tested the same two-step trick on the original
-database too, and it took 180 ms. So most of the gain comes from the
-better query, and about 1.5x (180 ms -> 124 ms) comes from the star
-schema's compact key-only bridge tables.
+database too, and it took about 180 ms. So a large part of the gain
+comes from the better query, and the rest from the star schema's
+compact key-only bridge tables.
 
 
 QUESTION 3: 30-Day Readmission Rate
@@ -112,19 +123,23 @@ WHERE dim_encounter_type.encounter_type_name = 'Inpatient'
 GROUP BY dim_specialty.specialty_name
 ORDER BY readmission_rate_percent DESC;
 
-Execution time: ~14 ms vs 99 ms original
-Improvement: 6.9x faster (the biggest gain)
+Execution time: 7.5-8.6 ms vs 66-109 ms original
+Improvement: about 8-15x faster (the biggest gain)
 
 Explanation:
 No self-join. The ETL already checked every inpatient stay once and
 stored the answer in is_readmitted_30_days (1 or 0). The query just
 filters inpatient stays and adds up the 1s with SUM(). The expensive
-date comparisons happen once per load, not every time the report
-runs.
+date comparisons happen once per load, not every time the report runs.
+The ETL check proves the flag follows the same rule: 502 readmitted
+stays in both databases.
 
 Result: Clinical Nutrition has the highest readmission rate
 (16.24%), then Cardiology (5.09%) and Internal Medicine (4.87%).
 Emergency has no inpatient stays.
+Data limit: the 276 inpatient stays discharged in December 2025 do not
+have 30 full days of follow-up in the data, so their rate is
+underestimated (in both databases).
 
 
 QUESTION 4: Revenue by Specialty & Month
@@ -137,19 +152,25 @@ SELECT
 FROM fact_encounters
 JOIN dim_specialty ON fact_encounters.specialty_key = dim_specialty.specialty_key
 JOIN dim_date      ON fact_encounters.encounter_date_key = dim_date.date_key
+WHERE fact_encounters.bill_count > 0
 GROUP BY dim_specialty.specialty_name, encounter_month
 ORDER BY dim_specialty.specialty_name, encounter_month;
 
-Execution time: ~71 ms vs 97 ms original
-(total per specialty without months: ~26 ms vs 90 ms, 3.4x faster)
-Improvement: 1.4x faster
+Execution time: 42-73 ms vs 72-73 ms original
+(total per specialty without months: 19-34 ms vs 51-84 ms, about 2.5-3x faster)
+Improvement: about the same to 1.7x faster
 
 Explanation:
 The money (total_allowed_amount) is already on the fact row, and
 specialty_key too. So the 3-join chain billing -> encounters ->
 providers -> specialties becomes 2 small joins (specialty and date),
 and the month comes ready from dim_date. The gain is bigger for the
-total per specialty, because then it needs only 1 join.
+total per specialty, because it needs only 1 join.
+WHERE bill_count > 0 keeps only encounters that have a bill, exactly
+like the original query, which starts from the billing table. Without
+it, the 2 encounters with no bill (7003 and 7004) would be included
+with 0. Today that changes no number, but the filter makes the two
+queries equal by design, not by luck.
 
 
 BONUS (nutrition): readmission by age group in Clinical Nutrition
@@ -157,6 +178,8 @@ BONUS (nutrition): readmission by age group in Clinical Nutrition
 Children 0-4 have the highest readmission rate (18.54%), compared with
 1-7% for adults. In a star schema this question needs only one more
 JOIN (dim_patient), because age_group is already calculated.
+Note: age_group is the age on 31 Dec 2025 (a fixed date in the ETL),
+not always the age on the day of the stay.
 Important: the data is made up. generate_data.py sends some children
 with severe malnutrition back to hospital on purpose, so this result
 shows that the query WORKS, not a real fact about patients.

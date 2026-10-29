@@ -6,11 +6,12 @@ Data: 3 sample patients + 5,000 made-up patients, 30,004 encounters,
       59,792 diagnosis lines, 45,103 procedure lines, 30,002 bills
       (sample data from the instructions + generate_data.py)
 
-How I measured: each query was run 5 times; the time is the middle
-(median) value, from MySQL profiling.
-DRAFT NOTE: these times come from my test run. Before the final
-version, re-run each query in MySQL Workbench and use the "Duration"
-column of the Output panel.
+How I measured: 3 test runs; in each run every query was run 5 times
+and I kept the middle (median) value, from MySQL profiling. Times vary
+between runs, so I give the range of the 3 runs.
+DRAFT NOTE: these times come from a test machine. Before the final
+version, re-run each query in MySQL Workbench (3 times each) and use
+the middle "Duration" value.
 
 The full queries are also in 02_oltp_queries.sql (ready to run).
 
@@ -35,7 +36,7 @@ Schema Analysis:
 - Number of joins: 2
 
 Performance:
-- Execution time: ~0.08 seconds (75 ms)
+- Execution time: about 0.05-0.06 seconds (47-63 ms)
 - Estimated rows scanned: 30,004 encounters (the whole table),
   each one looked up in providers and specialties
 
@@ -76,7 +77,7 @@ Schema Analysis:
   procedure of the SAME encounter.
 
 Performance:
-- Execution time: ~0.45 seconds (445 ms), the slowest of the 4
+- Execution time: about 0.3 seconds (297-349 ms), the slowest of the 4
 - Estimated rows scanned: 59,792 diagnosis lines x their procedures
   = 89,951 pair rows created before grouping
 
@@ -121,7 +122,7 @@ Schema Analysis:
   (next_stay is NULL), so they are counted in the total.
 
 Performance:
-- Execution time: ~0.10 seconds (99 ms)
+- Execution time: about 0.07-0.11 seconds (66-109 ms)
 - Estimated rows scanned: 6,048 inpatient stays, and for each one all
   encounters of that patient (about 6 each) to compare dates
 
@@ -133,6 +134,11 @@ every stay, so it is calculated again and again. It grows quickly:
 more encounters = more stays x more encounters per patient.
 (The index on patient_id, made automatically for the foreign key,
 keeps it from being even slower.)
+
+Data limit: the data ends on 31 Dec 2025. The 276 inpatient stays
+discharged in December 2025 do not have a full 30 days of follow-up,
+so some of their readmissions cannot be seen. Their rate is
+underestimated (the same in both databases).
 
 
 QUESTION 4: Revenue by Specialty & Month
@@ -155,9 +161,12 @@ Schema Analysis:
 - JOIN chain: billing -> encounters -> providers -> specialties
 
 Performance:
-- Execution time: ~0.10 seconds (97 ms)
+- Execution time: about 0.07 seconds (72-73 ms)
 - Estimated rows scanned: 30,002 bills, each followed through
   3 more tables
+- Note: the query starts from billing, so it only includes encounters
+  that HAVE a bill. 2 of the 30,004 encounters (7003 and 7004, from the
+  sample data in the instructions) have no bill and are not counted.
 
 Bottleneck Identified:
 The money (billing) is 3 joins away from the specialty. Every bill

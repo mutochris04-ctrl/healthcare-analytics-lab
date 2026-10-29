@@ -40,11 +40,12 @@ SELECT
     dim_procedure.cpt_description,
     pairs.encounter_count
 FROM (
-    -- Step A: count every (diagnosis, procedure) pair of keys
+    -- Step A: for every (diagnosis, procedure) pair of keys,
+    -- count the DIFFERENT encounters that have it (same as the original)
     SELECT
         bridge_encounter_diagnoses.diagnosis_key,
         bridge_encounter_procedures.procedure_key,
-        COUNT(*) AS encounter_count
+        COUNT(DISTINCT bridge_encounter_diagnoses.encounter_key) AS encounter_count
     FROM bridge_encounter_diagnoses
     JOIN bridge_encounter_procedures
          ON bridge_encounter_diagnoses.encounter_key = bridge_encounter_procedures.encounter_key
@@ -78,6 +79,8 @@ ORDER BY readmission_rate_percent DESC;
 -- QUESTION 4: Revenue by specialty and month
 -- Before: billing -> encounters -> providers -> specialties
 -- Now: total_allowed_amount is already in the fact table
+-- WHERE bill_count > 0: only encounters that have a bill,
+-- exactly like the original query, which starts from billing
 -- ============================================
 SELECT
     dim_specialty.specialty_name,
@@ -86,6 +89,7 @@ SELECT
 FROM fact_encounters
 JOIN dim_specialty ON fact_encounters.specialty_key = dim_specialty.specialty_key
 JOIN dim_date      ON fact_encounters.encounter_date_key = dim_date.date_key
+WHERE fact_encounters.bill_count > 0
 GROUP BY dim_specialty.specialty_name, encounter_month
 ORDER BY dim_specialty.specialty_name, encounter_month;
 
@@ -95,6 +99,7 @@ SELECT
     SUM(fact_encounters.total_allowed_amount) AS total_allowed
 FROM fact_encounters
 JOIN dim_specialty ON fact_encounters.specialty_key = dim_specialty.specialty_key
+WHERE fact_encounters.bill_count > 0
 GROUP BY dim_specialty.specialty_name
 ORDER BY total_allowed DESC;
 
@@ -102,6 +107,8 @@ ORDER BY total_allowed DESC;
 -- BONUS (nutrition): readmission rate by age group,
 -- for Clinical Nutrition stays. Easy in a star schema:
 -- just one more dimension in the query.
+-- Note: age_group = age on 31 Dec 2025 (fixed date in the ETL),
+-- not always the age on the day of the stay.
 -- ============================================
 SELECT
     dim_patient.age_group,

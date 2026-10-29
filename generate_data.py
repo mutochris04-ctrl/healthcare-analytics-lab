@@ -6,8 +6,10 @@
 # This program writes 01_oltp_generated_data.sql with thousands of
 # patients, encounters, diagnoses, procedures and bills.
 #
-# How to run (in the VS Code terminal):  python generate_data.py
-# Then run 01_oltp_generated_data.sql in MySQL Workbench
+# How to run (in the VS Code terminal, in the main project folder):
+#     python generate_data.py
+# The file is created in the sql folder. Then run
+# 01_oltp_generated_data.sql in MySQL Workbench
 # (File -> Run SQL Script, because the file is big).
 # ============================================
 
@@ -312,7 +314,7 @@ while len(encounters) < NUMBER_OF_ENCOUNTERS:
 # 8. SAVE everything into one SQL file
 # (order matters: patients and encounters BEFORE the rows that point to them)
 # ============================================
-with open("01_oltp_generated_data.sql", "w") as file:
+with open("sql/01_oltp_generated_data.sql", "w") as file:
     file.write("-- Made-up hospital data, created by generate_data.py\n")
     file.write("-- Run AFTER 00_oltp_schema.sql\n\n")
     file.write("USE healthcare_oltp;\n\n")
@@ -326,7 +328,7 @@ with open("01_oltp_generated_data.sql", "w") as file:
 # ============================================
 # 9. DISPLAY RESULTS
 # ============================================
-print("Done! 01_oltp_generated_data.sql was created.")
+print("Done! sql/01_oltp_generated_data.sql was created.")
 print("Patients:", len(patients))
 print("Encounters:", len(encounters))
 print("Diagnosis lines:", len(encounter_diagnoses))

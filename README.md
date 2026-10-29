@@ -15,56 +15,56 @@ I added a **Clinical Nutrition** service to the data (dietitians, malnutrition d
 
 ```text
 healthcare-analytics-lab/
+├── README.md                       this guide
+├── reflection.md                   Step 6: why it is faster, trade-offs, results
+├── generate_data.py                creates sql/01_oltp_generated_data.sql (made-up data)
 │
-│  Files I run, in this order:
-├── 00_oltp_schema.sql          Step 0: original database, sample data + nutrition reference data
-├── 01_oltp_generated_data.sql  Step 0: 5,000 patients and 30,000 encounters (made by generate_data.py)
-├── 02_oltp_queries.sql         Step 1: the 4 questions on the original database
-├── star_schema.sql             Step 3: the star schema tables, empty (name kept from the instructions)
-├── 03_etl_load.sql             Step 4: fills the star schema from the original database
-├── 04_star_queries.sql         Step 5: the 4 questions on the star schema (+ nutrition bonus)
+├── sql/                            everything I RUN, in this order:
+│   ├── 00_oltp_schema.sql          Step 0: original database, sample data + nutrition reference data
+│   ├── 01_oltp_generated_data.sql  Step 0: 5,000 patients and 30,000 encounters
+│   ├── 02_oltp_queries.sql         Step 1: the 4 questions on the original database
+│   ├── star_schema.sql             Step 3: the star schema tables, empty (name kept from the instructions)
+│   ├── 03_etl_load.sql             Step 4: fills the star schema and checks it (8 checks)
+│   └── 04_star_queries.sql         Step 5: the 4 questions on the star schema (+ nutrition bonus)
 │
-│  Deliverable documents (names from the instructions):
-├── query_analysis.txt          Step 1: queries, times and bottlenecks
-├── design_decisions.txt        Step 2: grain, dimensions, metrics, bridge tables
-├── etl_design.txt              Step 4: the ETL explained, refresh strategy
-├── star_schema_queries.txt     Step 5: queries, times and improvement
-├── reflection.md               Step 6: why it is faster, trade-offs, results
-│
-│  Other:
-├── generate_data.py            creates 01_oltp_generated_data.sql
-└── README.md
+└── analysis/                       the written analysis (names from the instructions):
+    ├── query_analysis.txt          Step 1: queries, times and bottlenecks
+    ├── design_decisions.txt        Step 2: grain, dimensions, metrics, bridge tables
+    ├── etl_design.txt              Step 4: the ETL explained, checks, refresh strategy
+    └── star_schema_queries.txt     Step 5: queries, times and improvement
 ```
 
 ## How to Run
 
-In MySQL Workbench, run these files in this order:
+In MySQL Workbench, run these files from the `sql/` folder, in this order:
 
 1. `00_oltp_schema.sql`: creates `healthcare_oltp` with the sample data
 2. `01_oltp_generated_data.sql`: adds the made-up data. The file is big, so use **File → Run SQL Script** instead of opening it.
 3. `02_oltp_queries.sql`: run each question alone (Ctrl + Enter) and note the Duration
 4. `star_schema.sql`: creates the empty `healthcare_star`
-5. `03_etl_load.sql`: fills the star schema. The last result checks that the counts and money match.
+5. `03_etl_load.sql`: fills the star schema. The last result checks that the counts, money and readmissions match (8 rows).
 6. `04_star_queries.sql`: run each question alone and compare the Duration
 
-To create new made-up data: `python generate_data.py` (always the same data, because of `random.seed(42)`).
+To load the star schema again, always run `star_schema.sql` first (it empties everything), then `03_etl_load.sql`.
+
+To create new made-up data, in a terminal in the main project folder: `python generate_data.py` (always the same data, because of `random.seed(42)`).
 
 ## Star Schema
 
-- **Fact table:** `fact_encounters`, one row per encounter, with keys to every dimension and pre-calculated metrics (diagnosis and procedure counts, claim and allowed totals, length of stay, 30-day readmission flag)
+- **Fact table:** `fact_encounters`, one row per encounter, with keys to every dimension and pre-calculated metrics (diagnosis, procedure and bill counts, claim and allowed totals, length of stay, 30-day readmission flag)
 - **Dimensions:** `dim_date`, `dim_patient` (with age group), `dim_provider`, `dim_specialty`, `dim_department`, `dim_encounter_type`, `dim_diagnosis`, `dim_procedure`
 - **Bridge tables:** `bridge_encounter_diagnoses`, `bridge_encounter_procedures` (an encounter has many diagnoses and procedures)
 
-## Results (draft test run, 30,004 encounters)
+## Results (draft, range of 3 test runs, 30,004 encounters)
 
 | Question | Original | Star schema | Improvement |
 |---|---|---|---|
-| 1. Encounters by specialty | 75 ms | 110 ms | 0.7× (not faster) |
-| 2. Diagnosis-procedure pairs | 445 ms | 124 ms | 3.6× faster |
-| 3. 30-day readmission rate | 99 ms | 14 ms | 6.9× faster |
-| 4. Revenue by specialty and month | 97 ms | 71 ms | 1.4× faster |
+| 1. Encounters by specialty | 47–63 ms | 49–81 ms | about the same |
+| 2. Diagnosis-procedure pairs | 297–349 ms | 88–104 ms | about 3–4× faster |
+| 3. 30-day readmission rate | 66–109 ms | 7.5–8.6 ms | about 8–15× faster |
+| 4. Revenue by specialty and month | 72–73 ms | 42–73 ms | about the same to 1.7× |
 
-All results are identical in both databases. The reasons, including why Question 1 is not faster, are in `reflection.md`.
+All results are identical in both databases, and the ETL checks (8 rows) prove the counts, money and readmissions match. The reasons, including why Questions 1 and 4 are about the same speed, are in `reflection.md`, and the details per question in `analysis/`.
 
 The data is made up, so the results show that the design works, not real facts about patients.
 

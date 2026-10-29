@@ -9,6 +9,8 @@ ETL = Extract, Transform, Load
 
 The working SQL is in 03_etl_load.sql. In this draft it is a FULL load:
 star_schema.sql empties the star schema, then 03_etl_load.sql fills it.
+Always run star_schema.sql BEFORE loading again: running
+03_etl_load.sql twice on full tables gives "Duplicate entry" errors.
 
 ORDER OF THE LOAD (it matters)
 1. Dimensions first (they create the new keys)
@@ -79,6 +81,7 @@ For each encounter in the hospital database:
   Calculate the pre-aggregated metrics
     diagnosis_count      = COUNT of its rows in encounter_diagnoses
     procedure_count      = COUNT of its rows in encounter_procedures
+    bill_count           = COUNT of its rows in billing
     total_claim_amount   = SUM of claim_amount in billing
     total_allowed_amount = SUM of allowed_amount in billing
     length_of_stay_hours = hours between encounter_date and discharge_date
@@ -87,11 +90,17 @@ For each encounter in the hospital database:
         discharge and within 30 days; otherwise 0
 
   Handle missing data
-    - No bill yet (2 sample encounters have none): IFNULL gives 0
-      instead of NULL, so sums still work.
+    - No bill yet (2 sample encounters, 7003 and 7004, have none):
+      IFNULL gives 0 instead of NULL, so sums still work, and
+      bill_count = 0 marks them, so revenue reports can leave them out
+      (an encounter with no bill is not the same as a bill of 0).
     - No discharge date (patient still in hospital): discharge_date_key
       and length_of_stay_hours stay NULL; the readmission check
       cannot be done yet, so the flag is 0 until the next load.
+    - End of the data: a stay discharged less than 30 days before the
+      last date in the data (276 stays discharged in December 2025)
+      cannot be fully checked yet; its flag may change on a later load
+      (see Refresh strategy, late-arriving facts).
     - A key that cannot be found (for example an encounter for a
       patient not in dim_patient): the inner JOIN skips the row.
       The check at the end compares row counts, so a missing row is
@@ -138,8 +147,18 @@ Late-arriving facts
     encounter date, so it lands in the correct month.
 
 Checks after every load
-  Number of encounters, diagnosis lines and procedure lines, and the
-  total allowed amount, must be the same in both databases
-  (section 7 of 03_etl_load.sql). In my test run all 4 matched:
-  30,004 encounters, 59,792 diagnosis lines, 45,103 procedure lines,
-  71,073,417.75 allowed.
+  Section 7 of 03_etl_load.sql compares the same numbers in both
+  databases; every row must match:
+  - encounters, diagnosis lines, procedure lines (nothing lost)
+  - encounters with a bill (bill_count > 0 vs encounters in billing)
+  - total claim amount and total allowed amount (no money lost or
+    counted twice)
+  - inpatient stays, and readmitted stays: in the original they are
+    counted with the self-join (the same rule as Question 3), in the
+    star schema with SUM(is_readmitted_30_days) on inpatient rows.
+    Equal numbers prove
+    the pre-computed flag follows the same rule as the original report.
+  In my test run all 8 rows matched: 30,004 encounters, 59,792 diagnosis
+  lines, 45,103 procedure lines, 30,002 encounters with a bill,
+  93,708,374.00 claimed, 71,073,417.75 allowed, 6,048 inpatient stays
+  and 502 readmitted stays.
