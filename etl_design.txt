@@ -1,0 +1,145 @@
+============================================
+ETL DESIGN: how data moves from the hospital database into the star schema
+============================================
+ETL = Extract, Transform, Load
+- Extract:   read rows from the hospital database (healthcare_oltp)
+- Transform: change them into the star schema shape (new keys,
+             age groups, counts, totals, readmission flag)
+- Load:      insert them into the star schema (healthcare_star)
+
+The working SQL is in 03_etl_load.sql. In this draft it is a FULL load:
+star_schema.sql empties the star schema, then 03_etl_load.sql fills it.
+
+ORDER OF THE LOAD (it matters)
+1. Dimensions first (they create the new keys)
+2. Then the fact table (it needs the dimension keys)
+3. Then the bridge tables (they need the fact's encounter_key)
+4. Then checks (row counts and money must match the source)
+
+
+1. DIMENSION LOAD LOGIC
+
+dim_date (one-time load)
+  A procedure with a WHILE loop starts at 2023-01-01 and adds one
+  day at a time until 2026-12-31 (1,461 days). For each day it
+  calculates year, quarter, month, month name, 'YYYY-MM', day name and
+  weekend flag. date_key = year*10000 + month*100 + day (20240510).
+  Pseudocode:
+      day = start_date
+      WHILE day <= end_date:
+          insert day and its calendar details
+          day = day + 1 day
+  It only needs to run again when more years are needed.
+
+dim_patient (from patients)
+  For each patient: copy the ID, names, gender, birth date and MRN.
+  Transform: calculate age_group from the age on 31 Dec 2025
+  (the end of the data): '0-4 (child)', '5-17', '18-39', '40-64', '65+'.
+  MySQL gives each patient a new patient_key.
+
+dim_specialty, dim_department, dim_diagnosis, dim_procedure
+  Straight copies of the small reference tables, each row gets a new key.
+
+dim_provider (from providers + specialties + departments)
+  Transform: join each provider ONCE to its specialty and department
+  and store their names in the provider row (denormalization).
+  Full name = first_name + ' ' + last_name.
+
+dim_encounter_type
+  The different values of encounter_type (SELECT DISTINCT):
+  Outpatient, Inpatient, ER.
+
+Handling updates to dimensions (plan for production)
+  - New rows (a new patient, a new doctor): insert them with a new key.
+  - Changed rows (for example a doctor moves to another department):
+    Type 1 = overwrite the old value. Simple; history is lost.
+    Type 2 = keep the old row, add a new row with the new value and
+    valid_from / valid_to dates, so old encounters still show the
+    department the doctor was in at that time.
+  - My choice: Type 1 for patient details (a corrected name should
+    replace the wrong one), Type 2 for providers' department and
+    specialty, because revenue and encounters by specialty must not
+    change when a doctor moves.
+  (This draft does a full reload, so it does not implement these yet.)
+
+
+2. FACT TABLE LOAD LOGIC
+
+For each encounter in the hospital database:
+
+  Look up the dimension keys
+    Join each dimension on the original ID:
+      dim_patient.patient_id     = encounters.patient_id
+      dim_provider.provider_id   = encounters.provider_id
+      dim_specialty.specialty_id = providers.specialty_id
+      dim_department.department_id = encounters.department_id
+      dim_encounter_type.encounter_type_name = encounters.encounter_type
+    Date keys are calculated from the dates (20240510).
+
+  Calculate the pre-aggregated metrics
+    diagnosis_count      = COUNT of its rows in encounter_diagnoses
+    procedure_count      = COUNT of its rows in encounter_procedures
+    total_claim_amount   = SUM of claim_amount in billing
+    total_allowed_amount = SUM of allowed_amount in billing
+    length_of_stay_hours = hours between encounter_date and discharge_date
+    is_readmitted_30_days = 1 if the encounter is Inpatient AND the same
+        patient has another Inpatient encounter starting after this
+        discharge and within 30 days; otherwise 0
+
+  Handle missing data
+    - No bill yet (2 sample encounters have none): IFNULL gives 0
+      instead of NULL, so sums still work.
+    - No discharge date (patient still in hospital): discharge_date_key
+      and length_of_stay_hours stay NULL; the readmission check
+      cannot be done yet, so the flag is 0 until the next load.
+    - A key that cannot be found (for example an encounter for a
+      patient not in dim_patient): the inner JOIN skips the row.
+      The check at the end compares row counts, so a missing row is
+      noticed. In production I would add an 'Unknown' row (key -1) in
+      each dimension and point such encounters to it, so no data is lost.
+
+
+3. BRIDGE TABLE LOAD LOGIC
+
+bridge_encounter_diagnoses
+  For each row of encounter_diagnoses: find the fact row with the
+  same encounter_id (-> encounter_key) and the dim_diagnosis row with
+  the same diagnosis_id (-> diagnosis_key), and insert
+  (encounter_key, diagnosis_key, diagnosis_sequence).
+
+bridge_encounter_procedures
+  The same with encounter_procedures and dim_procedure; the
+  procedure_date becomes a date key.
+
+
+4. REFRESH STRATEGY
+
+How often: once a day, at night (for example 02:00), when few people
+use the hospital system. Managers' reports are about months, so data
+from yesterday is fresh enough.
+
+Full or incremental:
+  - Draft (now): full refresh. Simple and safe with 30,000 encounters
+    (the whole ETL takes about 7 seconds).
+  - Production: incremental. Each night, load only encounters
+    created or changed since the last load (using the encounter or
+    claim dates, or a "last updated" column), and insert or update
+    those fact rows.
+
+Late-arriving facts
+  - Bills often arrive days after discharge (in my data, 1 to 10 days).
+    The incremental load re-checks encounters from the last 30 days and
+    updates their total_claim_amount and total_allowed_amount when a
+    new bill arrives.
+  - The readmission flag can only be known 30 days after discharge, so
+    the nightly load also re-calculates is_readmitted_30_days for
+    inpatient stays discharged in the last 30 days.
+  - A late encounter (entered days later) is still loaded with its real
+    encounter date, so it lands in the correct month.
+
+Checks after every load
+  Number of encounters, diagnosis lines and procedure lines, and the
+  total allowed amount, must be the same in both databases
+  (section 7 of 03_etl_load.sql). In my test run all 4 matched:
+  30,004 encounters, 59,792 diagnosis lines, 45,103 procedure lines,
+  71,073,417.75 allowed.

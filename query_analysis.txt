@@ -1,0 +1,178 @@
+============================================
+QUERY ANALYSIS: the 4 questions on the ORIGINAL database (OLTP)
+============================================
+Database: healthcare_oltp (MySQL 8)
+Data: 3 sample patients + 5,000 made-up patients, 30,004 encounters,
+      59,792 diagnosis lines, 45,103 procedure lines, 30,002 bills
+      (sample data from the instructions + generate_data.py)
+
+How I measured: each query was run 5 times; the time is the middle
+(median) value, from MySQL profiling.
+DRAFT NOTE: these times come from my test run. Before the final
+version, re-run each query in MySQL Workbench and use the "Duration"
+column of the Output panel.
+
+The full queries are also in 02_oltp_queries.sql (ready to run).
+
+
+QUESTION 1: Monthly Encounters by Specialty
+
+SQL Query:
+SELECT
+    DATE_FORMAT(encounters.encounter_date, '%Y-%m') AS encounter_month,
+    specialties.specialty_name,
+    encounters.encounter_type,
+    COUNT(*) AS total_encounters,
+    COUNT(DISTINCT encounters.patient_id) AS unique_patients
+FROM encounters
+JOIN providers   ON encounters.provider_id = providers.provider_id
+JOIN specialties ON providers.specialty_id = specialties.specialty_id
+GROUP BY encounter_month, specialties.specialty_name, encounters.encounter_type
+ORDER BY encounter_month, specialties.specialty_name, encounters.encounter_type;
+
+Schema Analysis:
+- Tables joined: encounters, providers, specialties
+- Number of joins: 2
+
+Performance:
+- Execution time: ~0.08 seconds (75 ms)
+- Estimated rows scanned: 30,004 encounters (the whole table),
+  each one looked up in providers and specialties
+
+Bottleneck Identified:
+The specialty is not stored on the encounter, so MySQL must follow a
+chain for EVERY encounter: encounters -> providers -> specialties.
+Then DATE_FORMAT() is calculated on all 30,004 rows to get the month,
+and the result must be sorted and grouped by 3 columns, with
+COUNT(DISTINCT) on patients. Nothing can use an index for the month,
+because the month is calculated, not stored.
+
+
+QUESTION 2: Top Diagnosis-Procedure Pairs
+
+SQL Query:
+SELECT
+    diagnoses.icd10_code,
+    diagnoses.icd10_description,
+    procedures.cpt_code,
+    procedures.cpt_description,
+    COUNT(DISTINCT encounter_diagnoses.encounter_id) AS encounter_count
+FROM encounter_diagnoses
+JOIN encounter_procedures ON encounter_diagnoses.encounter_id = encounter_procedures.encounter_id
+JOIN diagnoses            ON encounter_diagnoses.diagnosis_id = diagnoses.diagnosis_id
+JOIN procedures           ON encounter_procedures.procedure_id = procedures.procedure_id
+GROUP BY diagnoses.icd10_code, diagnoses.icd10_description,
+         procedures.cpt_code, procedures.cpt_description
+ORDER BY encounter_count DESC
+LIMIT 10;
+
+Schema Analysis:
+- Tables joined: encounter_diagnoses, encounter_procedures,
+  diagnoses, procedures
+- Number of joins: 3
+- How diagnosis and procedure data are joined: the two junction tables
+  have nothing in common except encounter_id, so they are joined on
+  encounter_id. Every diagnosis of an encounter is paired with every
+  procedure of the SAME encounter.
+
+Performance:
+- Execution time: ~0.45 seconds (445 ms), the slowest of the 4
+- Estimated rows scanned: 59,792 diagnosis lines x their procedures
+  = 89,951 pair rows created before grouping
+
+Bottleneck Identified:
+Row explosion. An encounter with 3 diagnoses and 2 procedures becomes
+3 x 2 = 6 rows. The join creates 89,951 rows from 59,792 + 45,103 rows,
+and for each one MySQL also looks up the code names (text), then
+groups them and counts DISTINCT encounters.
+
+
+QUESTION 3: 30-Day Readmission Rate
+
+SQL Query:
+SELECT
+    specialties.specialty_name,
+    COUNT(DISTINCT first_stay.encounter_id) AS inpatient_stays,
+    COUNT(DISTINCT CASE WHEN next_stay.encounter_id IS NOT NULL
+                        THEN first_stay.encounter_id END) AS readmitted_stays,
+    ROUND(100 * COUNT(DISTINCT CASE WHEN next_stay.encounter_id IS NOT NULL
+                                    THEN first_stay.encounter_id END)
+              / COUNT(DISTINCT first_stay.encounter_id), 2) AS readmission_rate_percent
+FROM encounters AS first_stay
+JOIN providers   ON first_stay.provider_id = providers.provider_id
+JOIN specialties ON providers.specialty_id = specialties.specialty_id
+LEFT JOIN encounters AS next_stay
+       ON  next_stay.patient_id = first_stay.patient_id
+       AND next_stay.encounter_type = 'Inpatient'
+       AND next_stay.encounter_date > first_stay.discharge_date
+       AND next_stay.encounter_date <= DATE_ADD(first_stay.discharge_date, INTERVAL 30 DAY)
+WHERE first_stay.encounter_type = 'Inpatient'
+GROUP BY specialties.specialty_name
+ORDER BY readmission_rate_percent DESC;
+
+Schema Analysis:
+- Tables joined: encounters (twice: first_stay and next_stay),
+  providers, specialties
+- Number of joins: 3 (including 1 self-join)
+- How a readmission is detected: for each inpatient stay (first_stay),
+  look for another INPATIENT stay of the same patient (next_stay)
+  whose encounter_date is after the first discharge_date and no more
+  than 30 days later. LEFT JOIN keeps stays without a readmission
+  (next_stay is NULL), so they are counted in the total.
+
+Performance:
+- Execution time: ~0.10 seconds (99 ms)
+- Estimated rows scanned: 6,048 inpatient stays, and for each one all
+  encounters of that patient (about 6 each) to compare dates
+
+Bottleneck Identified:
+The self-join. For every inpatient stay, MySQL searches the same big
+table again and compares dates row by row. The date comparison
+(between discharge_date and discharge_date + 30 days) is different for
+every stay, so it is calculated again and again. It grows quickly:
+more encounters = more stays x more encounters per patient.
+(The index on patient_id, made automatically for the foreign key,
+keeps it from being even slower.)
+
+
+QUESTION 4: Revenue by Specialty & Month
+
+SQL Query:
+SELECT
+    specialties.specialty_name,
+    DATE_FORMAT(encounters.encounter_date, '%Y-%m') AS encounter_month,
+    SUM(billing.allowed_amount) AS total_allowed
+FROM billing
+JOIN encounters  ON billing.encounter_id = encounters.encounter_id
+JOIN providers   ON encounters.provider_id = providers.provider_id
+JOIN specialties ON providers.specialty_id = specialties.specialty_id
+GROUP BY specialties.specialty_name, encounter_month
+ORDER BY specialties.specialty_name, encounter_month;
+
+Schema Analysis:
+- Tables joined: billing, encounters, providers, specialties
+- Number of joins: 3
+- JOIN chain: billing -> encounters -> providers -> specialties
+
+Performance:
+- Execution time: ~0.10 seconds (97 ms)
+- Estimated rows scanned: 30,002 bills, each followed through
+  3 more tables
+
+Bottleneck Identified:
+The money (billing) is 3 joins away from the specialty. Every bill
+needs its encounter (for the date and the provider), then the
+provider (for the specialty), then the specialty name. Then the month
+is calculated with DATE_FORMAT() on every row, and everything is
+grouped and summed.
+
+Answer: Internal Medicine brings the most money (25.8 million),
+then Clinical Nutrition (18.1 million), Cardiology (17.4 million)
+and Emergency (9.7 million).
+
+
+SUMMARY
+- Slowest: Question 2 (row explosion between two junction tables)
+- Every question needs 2 or 3 joins just to reach the specialty
+- Months are calculated on every row instead of being stored
+- Readmission needs a self-join with date calculations

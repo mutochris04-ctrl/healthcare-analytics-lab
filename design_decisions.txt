@@ -1,0 +1,118 @@
+============================================
+DESIGN DECISIONS: from OLTP to a star schema
+============================================
+Goal: answer the 4 business questions (encounters by specialty,
+diagnosis-procedure pairs, readmission rate, revenue) faster and
+with simpler SQL.
+
+
+DECISION 1: FACT TABLE GRAIN
+
+Choice: Option A - one row per encounter.
+
+Why:
+- 3 of the 4 questions count or add up ENCOUNTERS (Q1 encounters,
+  Q3 inpatient stays, Q4 money per encounter). With one row per
+  encounter, COUNT(*) and SUM() give the right answer directly.
+- With Option B (one row per diagnosis) or Option C (one row per
+  procedure), one encounter would appear 2 or 3 times. Counting
+  encounters or adding up money would count it 2 or 3 times
+  (double counting), unless every query used COUNT(DISTINCT).
+- The only question that needs diagnosis + procedure details is Q2.
+  It uses the bridge tables (Decision 4), so the fact table can stay
+  at one row per encounter.
+
+
+DECISION 2: DIMENSION TABLES
+
+Every dimension has a surrogate key (..._key), a new number made by
+the data warehouse, plus the original hospital ID (..._id) so each row
+can be traced back to the source.
+
+dim_date (WHEN)
+  date_key (e.g. 20240510), calendar_date, year, quarter, month,
+  month_name, year_and_month ('2024-05'), day_of_month, day_name,
+  is_weekend
+  -> the month is calculated ONCE here, not in every query.
+
+dim_patient (WHO)
+  patient_key, patient_id, first_name, last_name, gender,
+  date_of_birth, age_group, mrn
+  -> age_group ('0-4 (child)', '5-17', '18-39', '40-64', '65+') lets
+     analysts compare children and adults without calculating ages.
+
+dim_provider (BY WHOM)
+  provider_key, provider_id, provider_name, credential (MD, RD),
+  specialty_name, department_name
+  -> specialty and department NAMES are copied in (denormalized).
+
+dim_specialty (WHAT KIND OF CARE)
+  specialty_key, specialty_id, specialty_name, specialty_code
+
+dim_department (WHERE)
+  department_key, department_id, department_name, floor, capacity
+
+dim_encounter_type (WHAT KIND OF VISIT)
+  encounter_type_key, encounter_type_name (Outpatient, Inpatient, ER)
+
+dim_diagnosis (WHAT WAS FOUND)
+  diagnosis_key, diagnosis_id, icd10_code, icd10_description
+
+dim_procedure (WHAT WAS DONE)
+  procedure_key, procedure_id, cpt_code, cpt_description
+
+
+DECISION 3: PRE-AGGREGATED METRICS IN THE FACT TABLE
+
+These are calculated ONCE during the ETL and stored on each
+encounter row:
+
+- diagnosis_count: number of diagnoses of the encounter
+- procedure_count: number of procedures of the encounter
+- total_claim_amount: money asked (sum of the bills)
+- total_allowed_amount: money accepted (sum of the bills)
+- length_of_stay_hours: discharge time - admission time
+- is_readmitted_30_days: 1 if this inpatient stay is followed by
+  another inpatient stay of the same patient within 30 days, else 0
+
+I also store specialty_key directly on the fact row (not only
+through the provider), so no query needs the chain
+providers -> specialties.
+
+Why it helps performance:
+- Q4 no longer joins billing: the money is already on the row.
+- Q3 no longer needs a self-join with date calculations: the ETL
+  already answered "was this stay followed by a readmission?",
+  so the query only does SUM(is_readmitted_30_days).
+- The work is done once per load (for example once a night),
+  instead of every time someone runs a report.
+
+
+DECISION 4: BRIDGE TABLES
+
+Yes, I use 2 bridge tables:
+- bridge_encounter_diagnoses (encounter_key, diagnosis_key, diagnosis_sequence)
+- bridge_encounter_procedures (encounter_key, procedure_key, procedure_date_key)
+
+Why:
+- One encounter can have MANY diagnoses and MANY procedures
+  (many-to-many). They do not fit in one row per encounter.
+- Putting them in the fact table would change the grain (one row per
+  diagnosis or per procedure) and cause double counting (Decision 1).
+- Putting them in columns (diagnosis_1, diagnosis_2, ...) would limit
+  how many there can be and make searching hard.
+- The bridge tables contain only keys (small whole numbers), and their
+  primary key starts with encounter_key, so joining them is fast.
+- The counts (diagnosis_count, procedure_count) are still in the fact
+  table, for questions that only need "how many".
+
+
+EXTRA: NUTRITION DATA (my addition)
+
+The tables are exactly the ones from the instructions. I only added
+rows: a Clinical Nutrition specialty and Nutrition Unit, two
+dietitians (credential RD), nutrition diagnoses (ICD-10 E43, E44.0,
+E66.9, D50.9, E55.9), nutrition procedures (CPT 97802, 97803) and
+children as patients. This lets the same star schema answer nutrition
+questions, for example the readmission rate of children with
+malnutrition (see the bonus query in 04_star_queries.sql).
