@@ -55,16 +55,16 @@ To create new made-up data, in a terminal in the main project folder: `python ge
 - **Dimensions:** `dim_date`, `dim_patient` (with age group), `dim_provider`, `dim_specialty`, `dim_department`, `dim_encounter_type`, `dim_diagnosis`, `dim_procedure`
 - **Bridge tables:** `bridge_encounter_diagnoses`, `bridge_encounter_procedures` (an encounter has many diagnoses and procedures)
 
-## Results (draft, range of 3 test runs, 30,004 encounters)
+## Results (MySQL Workbench, 3 runs per query, middle value, 30,004 encounters)
 
 | Question | Original | Star schema | Improvement |
 |---|---|---|---|
-| 1. Encounters by specialty | 47–63 ms | 49–81 ms | about the same |
-| 2. Diagnosis-procedure pairs | 297–349 ms | 88–104 ms | about 3–4× faster |
-| 3. 30-day readmission rate | 66–109 ms | 7.5–8.6 ms | about 8–15× faster |
-| 4. Revenue by specialty and month | 72–73 ms | 42–73 ms | about the same to 1.7× |
+| 1. Encounters by specialty | 0.094 s | 0.141 s | not faster |
+| 2. Diagnosis-procedure pairs | 0.703 s | 0.156 s | about 4.5× faster |
+| 3. 30-day readmission rate | 0.125 s | 0.016 s | about 8× faster |
+| 4. Revenue by specialty and month | 0.188 s | 0.094 s | about 2× faster |
 
-All results are identical in both databases, and the ETL checks (8 rows) prove the counts, money and readmissions match. The reasons, including why Questions 1 and 4 are about the same speed, are in `reflection.md`, and the details per question in `analysis/`.
+All results are identical in both databases, and the ETL checks (8 rows) prove the counts, money and readmissions match. The reasons, including why Question 1 is not faster, are in `reflection.md`, and the details per question in `analysis/`.
 
 The data is made up, so the results show that the design works, not real facts about patients.
 
