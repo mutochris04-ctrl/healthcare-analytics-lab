@@ -9,9 +9,21 @@ Data: 3 sample patients + 5,000 made-up patients, 30,004 encounters,
 How I measured: 3 test runs; in each run every query was run 5 times
 and I kept the middle (median) value, from MySQL profiling. Times vary
 between runs, so I give the range of the 3 runs.
-DRAFT NOTE: these times come from a test machine. Before the final
-version, re-run each query in MySQL Workbench (3 times each) and use
-the middle "Duration" value.
+MySQL WORKBENCH MEASUREMENT (30 Oct 2026, my own laptop)
+Each query run 3 times in a row with Ctrl + Enter; I keep the middle
+value of the "Duration" column. The first run is often slower because
+MySQL still has to load the data into memory.
+
+Question                     Run 1    Run 2    Run 3    Middle
+1. Encounters by specialty   0.125 s  0.093 s  0.094 s  0.094 s
+2. Diagnosis-procedure pairs 0.828 s  0.703 s  0.640 s  0.703 s
+3. 30-day readmission rate   0.140 s  0.110 s  0.125 s  0.125 s
+4. Revenue by specialty      0.219 s  0.188 s  0.172 s  0.188 s
+
+Earlier test runs (MySQL profiling, 3 runs x 5 times, range of the
+medians) are kept below for each question. Workbench times are higher
+because they include more than the query itself, but the order is the
+same: Question 2 is the slowest.
 
 The full queries are also in 02_oltp_queries.sql (ready to run).
 
@@ -36,7 +48,7 @@ Schema Analysis:
 - Number of joins: 2
 
 Performance:
-- Execution time: about 0.05-0.06 seconds (47-63 ms)
+- Execution time: 0.094 s in Workbench (test runs: 47-63 ms)
 - Estimated rows scanned: 30,004 encounters (the whole table),
   each one looked up in providers and specialties
 
@@ -77,7 +89,7 @@ Schema Analysis:
   procedure of the SAME encounter.
 
 Performance:
-- Execution time: about 0.3 seconds (297-349 ms), the slowest of the 4
+- Execution time: 0.703 s in Workbench (test runs: 297-349 ms), the slowest of the 4
 - Estimated rows scanned: 59,792 diagnosis lines x their procedures
   = 89,951 pair rows created before grouping
 
@@ -122,7 +134,7 @@ Schema Analysis:
   (next_stay is NULL), so they are counted in the total.
 
 Performance:
-- Execution time: about 0.07-0.11 seconds (66-109 ms)
+- Execution time: 0.125 s in Workbench (test runs: 66-109 ms)
 - Estimated rows scanned: 6,048 inpatient stays, and for each one all
   encounters of that patient (about 6 each) to compare dates
 
@@ -161,7 +173,7 @@ Schema Analysis:
 - JOIN chain: billing -> encounters -> providers -> specialties
 
 Performance:
-- Execution time: about 0.07 seconds (72-73 ms)
+- Execution time: 0.188 s in Workbench (test runs: 72-73 ms)
 - Estimated rows scanned: 30,002 bills, each followed through
   3 more tables
 - Note: the query starts from billing, so it only includes encounters

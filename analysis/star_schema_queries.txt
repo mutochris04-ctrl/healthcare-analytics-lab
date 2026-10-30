@@ -11,13 +11,30 @@ row by row for all 4 questions (and the total per specialty): all equal.
 How I measured: 3 test runs; in each run every query was run 5 times
 and I kept the middle (median) value, from MySQL profiling. Times vary
 between runs, so I give the range of the 3 runs.
-DRAFT NOTE: re-measure in MySQL Workbench (3 times each) for the final
-version.
+MySQL WORKBENCH MEASUREMENT (30 Oct 2026, my own laptop)
+Each query run 3 times in a row with Ctrl + Enter on both databases;
+I keep the middle value of the "Duration" column. The results were the
+same in both databases (same rows and same numbers).
+
+Question                     Original   Star schema   Improvement
+1. Encounters by specialty   0.094 s    0.141 s       0.7x (star a little slower)
+2. Diagnosis-procedure pairs 0.703 s    0.156 s       about 4.5x faster
+3. 30-day readmission rate   0.125 s    0.016 s       about 8x faster
+4. Revenue by specialty      0.188 s    0.094 s       about 2x faster
+
+Star schema runs: Q1 0.328 / 0.141 / 0.125 s, Q2 0.250 / 0.156 / 0.156 s,
+Q3 0.000 / 0.016 / 0.016 s, Q4 0.093 / 0.094 / 0.094 s.
+Note: Workbench shows time in steps of about 0.016 s, so for Question 3
+the star query is faster than Workbench can measure precisely.
+
+Both measurements tell the same story: the biggest gains are Question 3
+(readmission flag computed once in the ETL) and Question 2 (pairs of
+keys counted first). Question 1 is not faster with this amount of data.
 
 The full queries are also in 04_star_queries.sql (ready to run).
 
 
-SUMMARY TABLE (range of 3 test runs)
+EARLIER TEST RUNS (MySQL profiling, range of 3 test runs)
 
 Question                     Original     Star schema   Improvement
 1. Encounters by specialty    47-63 ms     49-81 ms     0.7x-1.3x (about the same)
@@ -43,7 +60,8 @@ JOIN dim_encounter_type ON fact_encounters.encounter_type_key = dim_encounter_ty
 GROUP BY encounter_month, dim_specialty.specialty_name, encounter_type
 ORDER BY encounter_month, dim_specialty.specialty_name, encounter_type;
 
-Execution time: 49-81 ms vs 47-63 ms original
+Execution time (Workbench): 0.141 s vs 0.094 s original
+Execution time (test runs): 49-81 ms vs 47-63 ms original
 Improvement: about the same speed with this amount of data
 (0.7x to 1.3x depending on the run)
 
@@ -86,7 +104,8 @@ JOIN dim_procedure ON pairs.procedure_key = dim_procedure.procedure_key
 ORDER BY pairs.encounter_count DESC
 LIMIT 10;
 
-Execution time: 88-104 ms vs 297-349 ms original
+Execution time (Workbench): 0.156 s vs 0.703 s original
+Execution time (test runs): 88-104 ms vs 297-349 ms original
 Improvement: about 3-4x faster
 
 Explanation:
@@ -123,7 +142,8 @@ WHERE dim_encounter_type.encounter_type_name = 'Inpatient'
 GROUP BY dim_specialty.specialty_name
 ORDER BY readmission_rate_percent DESC;
 
-Execution time: 7.5-8.6 ms vs 66-109 ms original
+Execution time (Workbench): 0.016 s vs 0.125 s original
+Execution time (test runs): 7.5-8.6 ms vs 66-109 ms original
 Improvement: about 8-15x faster (the biggest gain)
 
 Explanation:
@@ -156,7 +176,8 @@ WHERE fact_encounters.bill_count > 0
 GROUP BY dim_specialty.specialty_name, encounter_month
 ORDER BY dim_specialty.specialty_name, encounter_month;
 
-Execution time: 42-73 ms vs 72-73 ms original
+Execution time (Workbench): 0.094 s vs 0.188 s original
+Execution time (test runs): 42-73 ms vs 72-73 ms original
 (total per specialty without months: 19-34 ms vs 51-84 ms, about 2.5-3x faster)
 Improvement: about the same to 1.7x faster
 
