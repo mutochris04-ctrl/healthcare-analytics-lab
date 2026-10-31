@@ -1,7 +1,5 @@
 # Healthcare Analytics Lab: OLTP to Star Schema
 
-*DRAFT version*
-
 A hospital database built for daily work (OLTP, normalized) answers analytics questions slowly. In this lab I measure 4 business questions on it, then design and build a **star schema** for analytics, move the data into it with an **ETL**, and compare the speed of the same questions.
 
 I added a **Clinical Nutrition** service to the data (dietitians, malnutrition diagnoses, children as patients), keeping the tables exactly as in the instructions.
